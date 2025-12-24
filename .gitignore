@@ -1,0 +1,34 @@
+# Build outputs
+out/
+task2/out/
+task3/out/
+task3/work/
+
+# Compiled binaries
+task2/build-stream8-kernel
+
+# Go build cache
+task2/.go/
+
+# Temporary files
+*.tmp
+*.log
+*~
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+.docker/
+
+# Large SRPM files (can be downloaded when needed)
+*.src.rpm
+**/*.src.rpm
+kernel-*.src.rpm
