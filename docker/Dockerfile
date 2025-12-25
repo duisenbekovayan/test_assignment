@@ -1,60 +1,119 @@
-FROM quay.io/centos/centos:stream8
+# CentOS Stream 8 Kernel Build Environment
+# Dockerfile for building kernel SRPMs
 
-ARG BUILDER_UID=1000
-ARG BUILDER_GID=1000
-ARG BUILDER_USER=builder
-ARG BUILDER_GROUP=builder
+FROM quay.io/centos/centos:stream8
 
 LABEL maintainer="Kernel Build Engineer"
 LABEL description="CentOS Stream 8 Kernel Build Environment"
 LABEL version="1.0"
 
+# Fix CentOS Stream 8 repository configuration
+# mirrorlist.centos.org no longer works, use vault.centos.org
 RUN set -eux; \
-    for f in /etc/yum.repos.d/CentOS-Stream-*.repo; do \
-      if [ -f "$f" ]; then \
-        sed -i \
-          -e 's|^mirrorlist=|#mirrorlist=|g' \
-          -e 's|^#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' \
-          "$f"; \
-      fi; \
-    done
+    sed -i \
+        -e 's|^mirrorlist=|#mirrorlist=|g' \
+        -e 's|^#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' \
+        /etc/yum.repos.d/CentOS-Stream-*.repo
 
-RUN set -eux; \
-    dnf -y update && \
+# Enable PowerTools repository (required for kernel build dependencies)
+RUN dnf -y install dnf-plugins-core && \
+    dnf config-manager --set-enabled powertools
+
+# Install EPEL repository (for additional packages)
+RUN dnf -y install epel-release
+
+# Install all required build dependencies
+RUN dnf -y update && \
     dnf -y install \
-      rpm-build rpmdevtools rpm-sign \
-      dnf-plugins-core yum-utils \
-      make gcc gcc-c++ binutils \
-      bison flex bc \
-      elfutils-libelf-devel openssl-devel \
-      ncurses-devel hmaccalc perl-ExtUtils-Embed \
-      pesign xmlto asciidoc hmaccalc \
-      git curl ca-certificates wget \
-      python3 python3-devel \
-      rsync patch diffutils \
-    && dnf -y clean all \
+        # RPM build tools
+        rpm-build \
+        rpmdevtools \
+        dnf-plugins-core \
+        yum-utils \
+        # Compiler and build tools
+        gcc \
+        gcc-c++ \
+        make \
+        binutils \
+        bison \
+        flex \
+        bc \
+        # LLVM/Clang (required for BPF)
+        clang \
+        llvm \
+        # Kernel build dependencies
+        elfutils-libelf-devel \
+        elfutils-devel \
+        openssl-devel \
+        ncurses-devel \
+        perl-ExtUtils-Embed \
+        perl-generators \
+        pesign \
+        xmlto \
+        asciidoc \
+        hmaccalc \
+        audit-libs-devel \
+        binutils-devel \
+        java-devel \
+        numactl-devel \
+        pciutils-devel \
+        python3-devel \
+        python3-docutils \
+        newt-devel \
+        perl-devel \
+        # Missing dependencies from error
+        bpftool \
+        dwarves \
+        libcap-devel \
+        libmnl-devel \
+        libnl3-devel \
+        libbabeltrace-devel \
+        libbpf-devel \
+        libtraceevent-devel \
+        xz-devel \
+        net-tools \
+        kabi-dw \
+        # Utilities
+        git \
+        curl \
+        wget \
+        rsync \
+        patch \
+        diffutils \
+        cpio \
+        xz \
+        bzip2 \
+        tar \
+        findutils \
+    && dnf clean all \
     && rm -rf /var/cache/dnf/*
 
-RUN set -eux; \
-    groupadd -g ${BUILDER_GID} ${BUILDER_GROUP} || true; \
-    useradd -m -u ${BUILDER_UID} -g ${BUILDER_GID} -s /bin/bash ${BUILDER_USER} || true
+# Create build user and mockbuild user (to avoid warnings with CentOS SRPMs)
+ARG BUILDER_UID=1000
+ARG BUILDER_GID=1000
+RUN groupadd -g ${BUILDER_GID} builder 2>/dev/null || true && \
+    useradd -m -u ${BUILDER_UID} -g ${BUILDER_GID} -s /bin/bash builder 2>/dev/null || true && \
+    groupadd mockbuild 2>/dev/null || true && \
+    useradd -g mockbuild mockbuild 2>/dev/null || true
 
-WORKDIR /home/${BUILDER_USER}
+# Setup RPM build directories
+RUN mkdir -p /home/builder/rpmbuild/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS} && \
+    chown -R builder:builder /home/builder
 
-ENV HOME=/home/${BUILDER_USER} \
-    RPMBUILD=/home/${BUILDER_USER}/rpmbuild \
-    LANG=en_US.UTF-8 \
-    LC_ALL=en_US.UTF-8
+# Also setup for root user (dnf builddep requires root)
+RUN mkdir -p /root/rpmbuild/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
 
-RUN set -eux; \
-    mkdir -p /home/${BUILDER_USER}/rpmbuild/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS} || true; \
-    chown -R ${BUILDER_UID}:${BUILDER_GID} /home/${BUILDER_USER} || true
+# Copy entrypoint script
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
-COPY --chown=${BUILDER_UID}:${BUILDER_GID} entrypoint.sh /home/${BUILDER_USER}/entrypoint.sh
-RUN chmod 0755 /home/${BUILDER_USER}/entrypoint.sh
+# Set working directory
+WORKDIR /home/builder
 
-USER root
-
+# Output volume
 VOLUME ["/out"]
 
-ENTRYPOINT ["/home/builder/entrypoint.sh"]
+# Use root by default (needed for dnf builddep)
+USER root
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

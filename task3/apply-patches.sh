@@ -1,51 +1,86 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/bash
+set -e
 
-# Script to apply upstream Linux kernel patches and rebuild SRPM
-# Applies commits 80e6480 and f90fff1
+ORIGINAL_SRPM="${1:-kernel-4.18.0-448.el8.src.rpm}"
+OUTPUT_DIR="${2:-./patched-srpm}"
 
-COMMIT_1="80e6480b1e0d7c3b4a8b4b4b5b5b5b5b5b5b5b5"
-COMMIT_2="f90fff1b2e0d7c3b4a8b4b4b5b5b5b5b5b5b5b5"
+echo "=== Creating Patched SRPM ==="
+echo "Original SRPM: $ORIGINAL_SRPM"
+echo "Output directory: $OUTPUT_DIR"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ORIGINAL_SRPM="${1:-../kernel-4.18.0-448.el8.src.rpm}"
-OUTPUT_DIR="${2:-./out}"
-WORK_DIR="${3:-./work}"
+# Check if original SRPM exists
+if [ ! -f "$ORIGINAL_SRPM" ]; then
+    echo "Error: Original SRPM not found: $ORIGINAL_SRPM"
+    echo "Please download it first:"
+    echo "  wget https://vault.centos.org/8-stream/BaseOS/Source/SPackages/kernel-4.18.0-448.el8.src.rpm"
+    exit 1
+fi
 
-# Color codes for better output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+# Create working directory
+WORK_DIR=$(mktemp -d)
+echo "Working directory: $WORK_DIR"
 
-log_info() {
-    echo -e "${BLUE}[*]${NC} $*"
-}
+# Setup RPM build environment
+mkdir -p ~/rpmbuild/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
 
-log_success() {
-    echo -e "${GREEN}[+]${NC} $*"
-}
+# Install the original SRPM
+echo "Installing original SRPM..."
+rpm -ivh "$ORIGINAL_SRPM"
 
-log_warn() {
-    echo -e "${YELLOW}[!]${NC} $*"
-}
+# Download the patches
+echo "Downloading patches..."
+PATCH1="0001-custom-80e648042e512d5a767da251d44132553fe04ae0.patch"
+PATCH2="0002-custom-f90fff1e152dedf52b932240ebbd670d83330eca.patch"
 
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $*" >&2
-}
+curl -L "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/patch/?id=80e648042e512d5a767da251d44132553fe04ae0" -o "$WORK_DIR/$PATCH1"
+curl -L "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/patch/?id=f90fff1e152dedf52b932240ebbd670d83330eca" -o "$WORK_DIR/$PATCH2"
 
-# Usage information
-usage() {
-    cat << EOF
-Apply upstream Linux kernel patches and rebuild SRPM
+# Copy patches to SOURCES
+cp "$WORK_DIR/$PATCH1" ~/rpmbuild/SOURCES/
+cp "$WORK_DIR/$PATCH2" ~/rpmbuild/SOURCES/
 
-Usage: $0 [original_srpm] [output_dir] [work_dir]
+# Modify the spec file to include our patches
+SPEC_FILE=~/rpmbuild/SPECS/kernel.spec
 
-Arguments:
-  original_srpm  Path to original SRPM (default: ../kernel-4.18.0-448.el8.src.rpm)
-  output_dir     Directory for output SRPM (default: ./out)
-  work_dir       Working directory for extraction (default: ./work)
+echo "Modifying spec file to include patches..."
+# Find the last patch number in the spec file
+LAST_PATCH=$(grep -E "^Patch[0-9]+:" "$SPEC_FILE" | sed 's/Patch\([0-9]*\):.*/\1/' | sort -n | tail -1)
+NEXT_PATCH=$((LAST_PATCH + 1))
+NEXT_PATCH2=$((LAST_PATCH + 2))
 
-Example:
-  $0 ../kernel-4.18.0-448.el8.src.rpm ./out ./work
+# Add our patches to the spec file after the last existing patch
+sed -i "/^Patch${LAST_PATCH}:/a\\
+Patch${NEXT_PATCH}: $PATCH1\\
+Patch${NEXT_PATCH2}: $PATCH2" "$SPEC_FILE"
+
+# Find the %prep section and add patch application
+sed -i "/%setup -q -n kernel-%{kversion}%{?dist}/a\\
+# Apply custom patches\\
+%patch${NEXT_PATCH} -p1\\
+%patch${NEXT_PATCH2} -p1" "$SPEC_FILE"
+
+# Increment the release number
+sed -i 's/^%define buildid .local$/&.patched/' "$SPEC_FILE" || \
+sed -i '/^%define buildid/d; /^%define dist_base_version/a %define buildid .local.patched' "$SPEC_FILE" || \
+sed -i '/^Release:/s/\(Release:.*\)/\1.patched/' "$SPEC_FILE"
+
+# Build the patched SRPM
+echo "Building patched SRPM..."
+cd ~/rpmbuild/SPECS
+rpmbuild -bs kernel.spec
+
+# Create output directory
+mkdir -p "$OUTPUT_DIR"
+
+# Copy the patched SRPM to output directory
+PATCHED_SRPM=$(ls -t ~/rpmbuild/SRPMS/kernel-*.src.rpm | head -1)
+cp "$PATCHED_SRPM" "$OUTPUT_DIR/"
+
+# Cleanup
+rm -rf "$WORK_DIR"
+
+echo "=== Patched SRPM Created ==="
+echo "Location: $OUTPUT_DIR/$(basename $PATCHED_SRPM)"
+echo ""
+echo "You can now build this patched SRPM using:"
+echo "  ./build-stream8-kernel $OUTPUT_DIR/$(basename $PATCHED_SRPM) ./output-patched"
